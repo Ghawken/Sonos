@@ -505,7 +505,7 @@ class Plugin(indigo.PluginBase):
     ###########################################################################################################
 
     def actionZP_SiriusXM(self, pluginAction, dev):
-        self.logger.info("🪪 Entered plugin.py::actionZP_SiriusXM")
+        self.logger.info("🪪 Entered plugin.py::actionZP_SiriusXM through plugin.py file")
         self.Sonos.actionZP_SiriusXM(pluginAction, dev)  # ✅ Delegate properly
 
     def actionPlay(self, pluginAction):
@@ -728,6 +728,14 @@ class Plugin(indigo.PluginBase):
         self.logger.info("🔎 ControlPage-triggered Sonos Group States audit...")
         self.dumpGroupedAudit()
 
+    # Called by Control Page / Trigger Action
+    def actiondump_groups_to_log(self, pluginAction):
+        self.logger.info("🔎 ControlPage-triggered Sonos Group States audit...")
+        #self.dump_groups_to_log()
+        self.Sonos.dump_groups_to_log() 
+
+
+
     # Shared logic
     def dumpGroupedAudit(self):
         for dev in indigo.devices.iter("com.ssi.indigoplugin.Sonos"):
@@ -736,6 +744,8 @@ class Plugin(indigo.PluginBase):
             group_grouped = dev.states.get("Grouped", "n/a")
 
             self.logger.info(f"📊 Device '{dev.name}': Coordinator={group_coordinator}, Group='{group_name}', Grouped={group_grouped}")
+
+
 
 
 ###

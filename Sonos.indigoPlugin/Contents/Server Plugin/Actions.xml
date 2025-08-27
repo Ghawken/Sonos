@@ -883,6 +883,13 @@
 </Action>
 
 
+
+<Action id="Auditdump_groups_to_log" uiPath="Audit / Debug" userVisible="true">
+    <Name>Dump Groups To Log (Control Page)</Name>
+    <CallbackMethod>actiondump_groups_to_log</CallbackMethod>
+</Action>
+
+
 </Actions>
 
 
