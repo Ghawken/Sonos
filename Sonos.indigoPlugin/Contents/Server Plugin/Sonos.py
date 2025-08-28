@@ -1210,6 +1210,117 @@ class SonosPlugin(object):
             ############################################################################################
             #### end of added code for action command support of favorites and volume
             ############################################################################################
+            elif action_id == "addPlayersToZone":
+                self.logger.warning(f"✅ Entering addPlayersToZone - This is more multiple players")
+
+                zones = []
+                x = 1
+                while x <= 12:
+                    ivar = 'zp' + str(x)
+                    if pluginAction.props.get(ivar) not in ["", None, "00000"]:
+                        zones.append(pluginAction.props.get(ivar))
+                    x = x + 1
+
+                # NEW: resolve coordinator from the action's target (this handler treats `dev` as the coordinator)
+                coord_dev = dev
+                coord_ip  = (coord_dev.pluginProps.get("address", "") or "").strip()
+                coord_uid = str(coord_dev.states.get('ZP_LocalUID', '')).strip()
+                coord_name = coord_dev.name
+
+                if not coord_uid or not coord_ip:
+                    self.logger.error(f"❌ addPlayersToZone: missing coordinator UID/IP for {coord_dev.name}")
+                    return
+
+                # NEW: ensure coordinator is snapped to coord=true / grouped=true / name=<coord>
+                try:
+                    self._update_group_coord(coord_dev, "true", reason="addPlayersToZone(snap) coordinator")
+                except Exception:
+                    coord_dev.updateStateOnServer("GROUP_Coordinator", "true")
+                coord_dev.updateStateOnServer("Grouped", True)                 # boolean
+                coord_dev.updateStateOnServer("GROUP_Name", coord_name)
+
+                # NEW: optional: start a small suppression window so evaluator won’t immediately undo snaps
+                try:
+                    if not hasattr(self, "_suppress_eval_until"):
+                        self._suppress_eval_until = {}
+                    self._suppress_eval_until[coord_dev.id] = time.time() + 2.0
+                except Exception:
+                    pass
+
+                for item in zones:
+                    indigo.server.log("add zone to group: %s" % item)
+                    dev_dest = indigo.devices[int(item)]
+
+                    # Skip if user accidentally included the coordinator in the list
+                    if dev_dest.id == coord_dev.id:
+                        self.logger.debug("⏭️ Skipping coordinator in join list")
+                        continue
+
+                    dest_ip  = (dev_dest.pluginProps.get("address", "") or "").strip()
+                    dest_uid = str(dev_dest.states.get('ZP_LocalUID', '')).strip()
+
+                    if not dest_ip or not dest_uid:
+                        self.logger.warning(f"⚠️ addPlayersToZone: missing IP/UID for {dev_dest.name}; skipping")
+                        continue
+
+                    # Tell the JOINER to join the COORDINATOR
+                    self.SOAPSend(
+                        dest_ip,
+                        "/MediaRenderer",
+                        "/AVTransport",
+                        "SetAVTransportURI",
+                        f"<CurrentURI>x-rincon:{coord_uid}</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>"
+                    )
+
+                    # NEW: snap Indigo states for the joiner immediately
+                    try:
+                        self._update_group_coord(dev_dest, "false", reason="addPlayersToZone(snap) joiner")
+                    except Exception:
+                        dev_dest.updateStateOnServer("GROUP_Coordinator", "false")
+                    dev_dest.updateStateOnServer("Grouped", True)              # boolean
+                    dev_dest.updateStateOnServer("GROUP_Name", coord_name)
+
+                    # NEW: suppression window for the joiner as well
+                    try:
+                        if not hasattr(self, "_suppress_eval_until"):
+                            self._suppress_eval_until = {}
+                        self._suppress_eval_until[dev_dest.id] = time.time() + 2.0
+                    except Exception:
+                        pass
+
+                    # (optional) tiny pause helps the stack keep up when adding many at once
+                    time.sleep(0.1)
+
+                    #self.refresh_all_group_states()
+                    # CHANGED: keep your helper call but it’s usually better *after* the loop to avoid churn.
+                    self._refresh_all_group_states_helper(reason="add player to zone")
+
+                #self.refresh_all_group_states()
+                # CHANGED: keep your existing end-of-loop refresh; this is the important one
+                self._refresh_all_group_states_helper(reason="add player to zone at end after all looped ????")
+
+                # NEW: propagate artwork once the group is formed
+                try:
+                    self.propagate_artwork_to_slaves(coord_dev)
+                except Exception as e:
+                    self.logger.debug(f"artwork propagation after addPlayersToZone failed: {e}")
+
+                # NEW: quick targeted reconcile so UI reflects final truth without waiting
+                try:
+                    self.evaluate_and_update_grouped_states(coord_dev)
+                    for item in zones:
+                        try:
+                            self.evaluate_and_update_grouped_states(indigo.devices[int(item)])
+                        except Exception:
+                            pass
+                except Exception as e:
+                    self.logger.debug(f"post-add reconcile failed: {e}")
+
+                self.logger.debug(f"✅ tried refresh at end of 1st add to set base cache ???? ")
+                return
+
+
+
 
             elif action_id == "setStandalone":
                 indigo.server.log(f"🔀 Request to remove zone from group: {dev.name}")
@@ -5249,7 +5360,6 @@ class SonosPlugin(object):
                 actionBusy = 0
                 return
 
-
         elif action == "announcementMP3":
             # ---- normalize props & log what the UI actually sent ----
             props = pluginAction.props or {}
@@ -5281,85 +5391,14 @@ class SonosPlugin(object):
                 self.logger.warning(f"[WARN] Volume out of range ({zp_volume}); clamping to 0–100")
                 zp_volume = max(0, min(100, zp_volume))
 
+            # gc_only (play on already-grouped coordinator only) if present
+            gc_only = bool(props.get("gc_only", False))
+
             # Log what we’ll use
             self.logger.debug(
                 f"[ANNOUNCE INPUT] source={source.upper()} file={sound_file!r} volume={zp_volume} "
                 f"gc_only={gc_only} zp1={props.get('zp1')!r}"
             )
-
-            # ===== build/prepare the announcement audio asset =====
-            if source == "tts":
-                announcement = self.plugin.substitute(props.get("setting"), validateOnly=False)
-                zp_language = props.get("language")
-                tts = gTTS(text=announcement, lang=zp_language)
-                tts.save('announcement.mp3')
-                s_announcement = "announcement.mp3"
-                tts_delay = 0
-
-            elif source == "ivona":
-                announcement = self.plugin.substitute(props.get("IVONA_setting"), validateOnly=False)
-                v = pyvona.pyvona.create_voice(self.IVONAaccessKey, self.IVONAsecretKey)
-                v.codec = 'mp3'
-                v.voice_name = IVONAVoices[int(props.get("IVONA_voice"))][1]
-                v.sentence_break = int(props.get("IVONA_sentence_break"))
-                v.speech_rate = props.get("IVONA_speech_rate")
-                v.fetch_voice(announcement, 'announcement')
-                s_announcement = "announcement.mp3"
-                tts_delay = 0.5
-                self.plugin.sleep(0.5)  # allow file creation
-
-            elif source == "polly":
-                announcement = self.plugin.substitute(props.get("POLLY_setting"), validateOnly=False)
-                client = boto3.client('polly', aws_access_key_id=self.PollyaccessKey,
-                                      aws_secret_access_key=self.PollysecretKey, region_name='us-east-1')
-                response = client.synthesize_speech(OutputFormat='mp3', Text=announcement, VoiceId=props.get("POLLY_voice"))
-                if "AudioStream" in response:
-                    with closing(response["AudioStream"]) as stream:
-                        data = stream.read()
-                        with open("announcement.mp3", "wb") as f:
-                            f.write(data)
-                s_announcement = "announcement.mp3"
-                tts_delay = 0.5
-
-            elif source == "apple":
-                announcement = self.plugin.substitute(props.get("APPLE_setting"), validateOnly=False)
-                sp = NSSpeechSynthesizer.alloc().initWithVoice_(props.get("APPLE_voice"))
-                ru = NSURL.fileURLWithPath_("./announcement.aiff")
-                sp.startSpeakingString_toURL_(announcement, ru)
-                s_announcement = "announcement.aiff"
-                tts_delay = 0.5
-                self.plugin.sleep(0.5)
-
-            elif source == "microsoft":
-                announcement = self.plugin.substitute(props.get("MICROSOFT_setting"), validateOnly=False)
-                language = props.get("MICROSOFT_voice")
-                statinfo = self.MicrosoftTranslate(announcement, language)
-                s_announcement = "announcement.mp3"
-                tts_delay = 0.5
-                if statinfo is False:
-                    self.plugin.errorLog("Microsoft Translate Error")
-                    return
-
-            else:
-                # File source (default)
-                fname = sound_file
-                if not fname:
-                    self.logger.error("❌ No sound file selected in 'sound_file'.")
-                    return
-                src = os.path.join(self.SoundFilePath or "", fname)
-                if not os.path.isfile(src):
-                    self.logger.error(f"❌ Sound file not found: {src}")
-                    return
-                try:
-                    os.system(f'cp -pr "{src}" "announcement.mp3"')
-                except Exception as e:
-                    self.logger.error(f"❌ Failed to prepare announcement file: {e}")
-                    return
-                announcement = f"FILE [{fname}]"
-                s_announcement = "announcement.mp3"
-                tts_delay = 0
-
-            indigo.server.log("Announcement: %s, Volume: %s" % (announcement, zp_volume))
 
             # ===== determine target device/IP from built AnnouncementZones =====
             if not AnnouncementZones:
@@ -5368,13 +5407,91 @@ class SonosPlugin(object):
 
             try:
                 GM = indigo.devices[int(AnnouncementZones[0])]
-                zoneIP = GM.pluginProps.get("address", "").strip()
+                zoneIP = (GM.pluginProps.get("address") or GM.address or "").strip()
                 if not zoneIP:
                     self.logger.error(f"❌ No IP address found in pluginProps for device {GM.name}.")
                     return
                 self.logger.debug(f"[ANNOUNCE TARGET] device={GM.name} id={GM.id} ip={zoneIP}")
             except Exception as e:
                 self.logger.error(f"❌ Failed to resolve announcement zone device or IP: {e}")
+                return
+
+            # ===== build/prepare the announcement audio asset =====
+            try:
+                if source == "tts":
+                    announcement = self.plugin.substitute(props.get("setting"), validateOnly=False)
+                    zp_language = props.get("language")
+                    tts = gTTS(text=announcement, lang=zp_language)
+                    tts.save('announcement.mp3')
+                    s_announcement = "announcement.mp3"
+                    tts_delay = 0
+
+                elif source == "ivona":
+                    announcement = self.plugin.substitute(props.get("IVONA_setting"), validateOnly=False)
+                    v = pyvona.pyvona.create_voice(self.IVONAaccessKey, self.IVONAsecretKey)
+                    v.codec = 'mp3'
+                    v.voice_name = IVONAVoices[int(props.get("IVONA_voice"))][1]
+                    v.sentence_break = int(props.get("IVONA_sentence_break"))
+                    v.speech_rate = props.get("IVONA_speech_rate")
+                    v.fetch_voice(announcement, 'announcement')
+                    s_announcement = "announcement.mp3"
+                    tts_delay = 0.5
+                    self.plugin.sleep(0.5)  # allow file creation
+
+                elif source == "polly":
+                    announcement = self.plugin.substitute(props.get("POLLY_setting"), validateOnly=False)
+                    client = boto3.client('polly', aws_access_key_id=self.PollyaccessKey,
+                                          aws_secret_access_key=self.PollysecretKey, region_name='us-east-1')
+                    response = client.synthesize_speech(OutputFormat='mp3', Text=announcement, VoiceId=props.get("POLLY_voice"))
+                    if "AudioStream" in response:
+                        with closing(response["AudioStream"]) as stream:
+                            data = stream.read()
+                            with open("announcement.mp3", "wb") as f:
+                                f.write(data)
+                    s_announcement = "announcement.mp3"
+                    tts_delay = 0.5
+
+                elif source == "apple":
+                    announcement = self.plugin.substitute(props.get("APPLE_setting"), validateOnly=False)
+                    sp = NSSpeechSynthesizer.alloc().initWithVoice_(props.get("APPLE_voice"))
+                    ru = NSURL.fileURLWithPath_("./announcement.aiff")
+                    sp.startSpeakingString_toURL_(announcement, ru)
+                    s_announcement = "announcement.aiff"
+                    tts_delay = 0.5
+                    self.plugin.sleep(0.5)
+
+                elif source == "microsoft":
+                    announcement = self.plugin.substitute(props.get("MICROSOFT_setting"), validateOnly=False)
+                    language = props.get("MICROSOFT_voice")
+                    statinfo = self.MicrosoftTranslate(announcement, language)
+                    s_announcement = "announcement.mp3"
+                    tts_delay = 0.5
+                    if statinfo is False:
+                        self.plugin.errorLog("Microsoft Translate Error")
+                        return
+
+                else:
+                    # File source (default)
+                    fname = sound_file
+                    if not fname:
+                        self.logger.error("❌ No sound file selected in 'sound_file'.")
+                        return
+                    src = os.path.join(self.SoundFilePath or "", fname)
+                    if not os.path.isfile(src):
+                        self.logger.error(f"❌ Sound file not found: {src}")
+                        return
+                    try:
+                        os.system(f'cp -pr "{src}" "announcement.mp3"')
+                    except Exception as e:
+                        self.logger.error(f"❌ Failed to prepare announcement file: {e}")
+                        return
+                    announcement = f"FILE [{fname}]"
+                    s_announcement = "announcement.mp3"
+                    tts_delay = 0
+
+                indigo.server.log("Announcement: %s, Volume: %s" % (announcement, zp_volume))
+            except Exception as e:
+                self.logger.error(f"❌ Error while preparing announcement audio: {e}")
                 return
 
             # helper: coerce any value to an int, or None if not possible
@@ -5385,7 +5502,13 @@ class SonosPlugin(object):
                     return None
 
             # --- capture current playback state for quick restore (target device only) ---
-            prev = {"uri": "", "meta": "", "pos": "00:00:00", "vol": None}
+            prev = {
+                "uri": "", "meta": "", "pos": "00:00:00", "vol": None,
+                "state": "UNKNOWN",             # NEW: transport state
+                "mute": None,                   # NEW: device mute (0/1)
+                "per_dev_vol": {}, "per_dev_mute": {},  # NEW: per-device mutes
+                "group_vol": None, "group_mute": None   # existing + group mute now meaningful
+            }
             try:
                 self.logger.debug(f"[ANNOUNCE SAVE] snapshot begin for {GM.name} @ {zoneIP}")
                 mi = self.SOAPSend(zoneIP, "/MediaRenderer", "/AVTransport", "GetMediaInfo", "")
@@ -5396,7 +5519,20 @@ class SonosPlugin(object):
                     prev["pos"] = self.parseRelTime(GM, pi) or "00:00:00"
                 except Exception as e:
                     self.logger.debug(f"[ANNOUNCE SAVE] parseRelTime failed: {e}")
-                    prev["pos"] = "00:00:00"
+                    try:
+                        rel = self.parseDirty(pi, "<RelTime>", "</RelTime>") or ""
+                        prev["pos"] = rel if rel.count(":") == 2 else "00:00:00"
+                    except Exception:
+                        prev["pos"] = "00:00:00"
+
+                # NEW: Transport state (PLAYING/PAUSED_PLAYBACK/STOPPED)
+                try:
+                    ti = self.SOAPSend(zoneIP, "/MediaRenderer", "/AVTransport", "GetTransportInfo", "")
+                    prev["state"] = (self.parseDirty(ti, "<CurrentTransportState>", "</CurrentTransportState>") or "UNKNOWN").strip()
+                except Exception as e:
+                    self.logger.debug(f"[ANNOUNCE SAVE] GetTransportInfo failed: {e}")
+
+                # Volume + mute on target device
                 try:
                     gv = self.SOAPSend(zoneIP, "/MediaRenderer", "/RenderingControl", "GetVolume",
                                        "<Channel>Master</Channel>")
@@ -5404,15 +5540,22 @@ class SonosPlugin(object):
                 except Exception as e:
                     self.logger.debug(f"[ANNOUNCE SAVE] GetVolume failed: {e}")
                     prev["vol"] = None
-                self.logger.debug(f"[ANNOUNCE SAVE] uri={prev['uri']!r} pos={prev['pos']} vol={prev['vol']} (type={type(prev['vol']).__name__})")
+
+                # NEW: device mute
+                try:
+                    gm_xml = self.SOAPSend(zoneIP, "/MediaRenderer", "/RenderingControl", "GetMute",
+                                           "<Channel>Master</Channel>")
+                    prev["mute"] = _as_int(self.parseCurrentMute(gm_xml))  # expect 0/1
+                except Exception as e:
+                    self.logger.debug(f"[ANNOUNCE SAVE] GetMute failed: {e}")
+                    prev["mute"] = None
+
+                self.logger.debug(f"[ANNOUNCE SAVE] uri={prev['uri']!r} pos={prev['pos']} vol={prev['vol']} "
+                                  f"state={prev['state']} mute={prev['mute']}")
             except Exception as e:
                 self.logger.warning(f"⚠️ Failed to snapshot current state prior to announcement: {e}")
 
-            # --- capture volumes we will overwrite (per-device or group) ---
-            prev["per_dev_vol"] = {}
-            prev["group_vol"] = None
-            prev["group_mute"] = None
-
+            # --- capture volumes/mutes we will overwrite (per-device or group) ---
             try:
                 if gc_only is False:
                     # Per-device snapshot
@@ -5424,16 +5567,23 @@ class SonosPlugin(object):
                             if not _ip:
                                 self.logger.debug(f"[ANNOUNCE SAVE] skip {_dev.name}: no IP")
                                 continue
+                            # volume
                             gv = self.SOAPSend(_ip, "/MediaRenderer", "/RenderingControl", "GetVolume",
                                                "<Channel>Master</Channel>")
                             v_raw = self.parseCurrentVolume(gv)
                             v = _as_int(v_raw)
                             prev["per_dev_vol"][_dev.id] = v
+                            # NEW: mute
+                            gm_xml = self.SOAPSend(_ip, "/MediaRenderer", "/RenderingControl", "GetMute",
+                                                   "<Channel>Master</Channel>")
+                            m = _as_int(self.parseCurrentMute(gm_xml))
+                            prev["per_dev_mute"][_dev.id] = m
                             snap_cnt += 1
-                            self.logger.debug(f"[ANNOUNCE SAVE] captured {_dev.name} vol={v} (raw={v_raw!r})")
+                            self.logger.debug(f"[ANNOUNCE SAVE] captured {_dev.name} vol={v} mute={m}")
                         except Exception as e:
                             self.logger.debug(f"[ANNOUNCE SAVE] capture failed for device {item}: {e}")
-                    self.logger.debug(f"[ANNOUNCE SAVE] per-device volumes captured: {snap_cnt} → {prev['per_dev_vol']}")
+                    self.logger.debug(f"[ANNOUNCE SAVE] per-device volumes/mutes captured: {snap_cnt} → "
+                                      f"{prev['per_dev_vol']} / {prev['per_dev_mute']}")
                 else:
                     # Group snapshot (coordinator only)
                     try:
@@ -5448,20 +5598,9 @@ class SonosPlugin(object):
                     except Exception as e:
                         self.logger.debug(f"[ANNOUNCE SAVE] GetGroupMute failed: {e}")
                         prev["group_mute"] = None
-                    self.logger.debug(f"[ANNOUNCE SAVE] group_vol={prev['group_vol']} (type={type(prev['group_vol']).__name__}) group_mute={prev['group_mute']}")
+                    self.logger.debug(f"[ANNOUNCE SAVE] group_vol={prev['group_vol']} group_mute={prev['group_mute']}")
             except Exception as e:
-                self.logger.debug(f"[ANNOUNCE SAVE] Volume snapshot failed (continuing): {e}")
-
-            # ===== optional group-coordinator reads =====
-            if gc_only is True:
-                try:
-                    gv_xml = self.SOAPSend(zoneIP, "/MediaRenderer", "/GroupRenderingControl", "GetGroupVolume", "")
-                    group_volume = _as_int(self.parseCurrentVolume(gv_xml))
-                    gm_xml = self.SOAPSend(zoneIP, "/MediaRenderer", "/GroupRenderingControl", "GetGroupMute", "")
-                    group_mute = _as_int(self.parseCurrentMute(gm_xml))
-                    self.logger.debug(f"[ANNOUNCE INFO] gc_only=True live group_volume={group_volume} group_mute={group_mute}")
-                except Exception as e:
-                    self.logger.warning(f"[ANNOUNCE INFO] gc_only=True group snapshot failed (continuing): {e}")
+                self.logger.debug(f"[ANNOUNCE SAVE] Volume/mute snapshot failed (continuing): {e}")
 
             self.logger.debug("[ANNOUNCE STEP] snapshot complete; entering (re)group")
 
@@ -5484,7 +5623,6 @@ class SonosPlugin(object):
                         itemcount += 1
                 else:
                     # Nothing to split here; just ensure transport is stopped on GM
-                    # (REPLACED actionDirect Stop with direct SOAP)
                     try:
                         self.SOAPSend(zoneIP, "/MediaRenderer", "/AVTransport", "Stop", "")
                         self.logger.debug("[ANNOUNCE] Stop before announcement sent")
@@ -5515,7 +5653,6 @@ class SonosPlugin(object):
                                   "<Channel>Master</Channel><DesiredMute>0</DesiredMute>")
             else:
                 # Group: SetGroupVolume + SetGroupMute on the coordinator only
-                # (REPLACED actionDirect GroupVolume/GroupMuteOff with direct SOAP)
                 self.logger.debug(f"[ANNOUNCE VOL] GROUP → {zp_volume}")
                 try:
                     self.SOAPSend(zoneIP, "/MediaRenderer", "/GroupRenderingControl", "SetGroupVolume",
@@ -5530,6 +5667,7 @@ class SonosPlugin(object):
             # ===== inspect the audio to time playback =====
             count = 0
             success = 0
+            audio = None
             while count < 5 and success == 0:
                 try:
                     if "mp3" in s_announcement:
@@ -5542,7 +5680,7 @@ class SonosPlugin(object):
                     self.plugin.sleep(0.5)
                     count += 1
 
-            if success == 1:
+            if success == 1 and audio is not None:
                 indigo.server.log("Announcement Length: %s" % audio.info.length)
 
                 # Ensure announcement URI components are valid
@@ -5601,7 +5739,6 @@ class SonosPlugin(object):
                     return
 
                 # turn off queue repeat
-                # (REPLACED actionDirect Q_Repeat with AVTransport SetPlayMode NORMAL)
                 try:
                     self.SOAPSend(zoneIP, "/MediaRenderer", "/AVTransport", "SetPlayMode", "<NewPlayMode>NORMAL</NewPlayMode>")
                 except Exception as e:
@@ -5609,7 +5746,7 @@ class SonosPlugin(object):
 
                 self.plugin.sleep(1)
 
-                # (REPLACED actionDirect Play with direct SOAP)
+                # Play announcement
                 self.logger.debug("[ANNOUNCE] Play announcement")
                 self.SOAPSend(zoneIP, "/MediaRenderer", "/AVTransport", "Play", "<Speed>1</Speed>")
                 self.plugin.sleep(tts_delay + audio.info.length)
@@ -5617,16 +5754,18 @@ class SonosPlugin(object):
                 # --- restore previous playback (best-effort) ---
                 try:
                     self.logger.debug(f"[ANNOUNCE RESTORE] begin; gc_only={gc_only} "
-                                     f"dev_vols={prev.get('per_dev_vol')} group_vol={prev.get('group_vol')} "
-                                     f"uri={prev.get('uri')!r} pos={prev.get('pos')} vol={prev.get('vol')}")
+                                      f"dev_vols={prev.get('per_dev_vol')} group_vol={prev.get('group_vol')} "
+                                      f"uri={prev.get('uri')!r} pos={prev.get('pos')} vol={prev.get('vol')} "
+                                      f"state={prev.get('state')} mute={prev.get('mute')}")
 
-                    if prev.get("uri") and "announcement." not in (prev.get("uri") or ""):
+                    had_prior_uri = bool(prev.get("uri")) and "announcement." not in (prev.get("uri") or "")
+
+                    if had_prior_uri:
                         restore_payload = (f"<CurrentURI>{prev['uri']}</CurrentURI>"
                                            f"<CurrentURIMetaData>{prev['meta']}</CurrentURIMetaData>")
                         self.SOAPSend(zoneIP, "/MediaRenderer", "/AVTransport", "SetAVTransportURI", restore_payload)
                         self.plugin.sleep(0.3)  # settle
 
-                        # Try to resume near the previous position if it looks valid (hh:mm:ss)
                         if prev.get("pos") and prev["pos"].count(":") == 2 and prev["pos"] != "00:00:00":
                             try:
                                 self.SOAPSend(zoneIP, "/MediaRenderer", "/AVTransport", "Seek",
@@ -5634,54 +5773,98 @@ class SonosPlugin(object):
                                 self.logger.debug(f"[ANNOUNCE RESTORE] Seek to {prev['pos']}")
                             except Exception as e:
                                 self.logger.debug(f"[ANNOUNCE RESTORE] Seek failed (continuing): {e}")
+                    else:
+                        self.logger.debug("[ANNOUNCE RESTORE] No prior URI captured; skipping URI restore")
 
-                        # ========== UNCONDITIONAL VOLUME RESTORE ==========
-                        restore_vol = None
-                        if gc_only:
-                            gv = prev.get("group_vol")
-                            pv = prev.get("vol")
-                            restore_vol = gv if isinstance(gv, int) else (pv if isinstance(pv, int) else None)
-                        else:
-                            pv = prev.get("vol")
-                            restore_vol = pv if isinstance(pv, int) else None
-
-                        if not isinstance(restore_vol, int):
-                            restore_vol = 20
-                            self.logger.debug(f"[ANNOUNCE RESTORE] No saved volume found; falling back to {restore_vol}")
-
-                        if restore_vol < 0 or restore_vol > 100:
-                            self.logger.debug(f"[ANNOUNCE RESTORE] Saved volume out of range ({restore_vol}); clamping.")
-                            restore_vol = max(0, min(100, restore_vol))
-
-                        if gc_only:
-                            self.logger.debug(f"[ANNOUNCE RESTORE] Restoring GROUP volume → {restore_vol}")
+                    # ========== RESTORE VOLUME + MUTE EXACTLY ==========
+                    if gc_only:
+                        restore_gv = prev.get("group_vol")
+                        if isinstance(restore_gv, int):
                             try:
+                                self.logger.debug(f"[ANNOUNCE RESTORE] Restoring GROUP volume → {restore_gv}")
                                 self.SOAPSend(zoneIP, "/MediaRenderer", "/GroupRenderingControl", "SetGroupVolume",
-                                              f"<DesiredVolume>{restore_vol}</DesiredVolume>")
-                                self.SOAPSend(zoneIP, "/MediaRenderer", "/GroupRenderingControl", "SetGroupMute",
-                                              "<DesiredMute>0</DesiredMute>")
+                                              f"<DesiredVolume>{restore_gv}</DesiredVolume>")
                             except Exception as e:
                                 self.logger.debug(f"[ANNOUNCE RESTORE] Group volume restore failed: {e}")
-                        else:
-                            self.logger.debug(f"[ANNOUNCE RESTORE] Restoring device volume → {restore_vol}")
+                        if prev.get("group_mute") in (0, 1):
+                            try:
+                                self.logger.debug(f"[ANNOUNCE RESTORE] Restoring GROUP mute → {prev['group_mute']}")
+                                self.SOAPSend(zoneIP, "/MediaRenderer", "/GroupRenderingControl", "SetGroupMute",
+                                              f"<DesiredMute>{prev['group_mute']}</DesiredMute>")
+                            except Exception as e:
+                                self.logger.debug(f"[ANNOUNCE RESTORE] Group mute restore failed: {e}")
+                    else:
+                        for item in AnnouncementZones:
+                            try:
+                                _dev = indigo.devices[int(item)]
+                                _ip = (_dev.pluginProps.get("address") or _dev.address or "").strip()
+                                if not _ip:
+                                    continue
+                                pv = prev["per_dev_vol"].get(_dev.id, None)
+                                pm = prev["per_dev_mute"].get(_dev.id, None)
+                                if isinstance(pv, int):
+                                    self.logger.debug(f"[ANNOUNCE RESTORE] { _dev.name } volume → {pv}")
+                                    self.SOAPSend(_ip, "/MediaRenderer", "/RenderingControl", "SetVolume",
+                                                  f"<Channel>Master</Channel><DesiredVolume>{pv}</DesiredVolume>")
+                                if pm in (0, 1):
+                                    self.logger.debug(f"[ANNOUNCE RESTORE] { _dev.name } mute → {pm}")
+                                    self.SOAPSend(_ip, "/MediaRenderer", "/RenderingControl", "SetMute",
+                                                  f"<Channel>Master</Channel><DesiredMute>{pm}</DesiredMute>")
+                            except Exception as e:
+                                self.logger.debug(f"[ANNOUNCE RESTORE] per-device restore failed for {item}: {e}")
+
+                        if isinstance(prev.get("vol"), int):
                             try:
                                 self.SOAPSend(zoneIP, "/MediaRenderer", "/RenderingControl", "SetVolume",
-                                              f"<Channel>Master</Channel><DesiredVolume>{restore_vol}</DesiredVolume>")
+                                              f"<Channel>Master</Channel><DesiredVolume>{prev['vol']}</DesiredVolume>")
+                            except Exception:
+                                pass
+                        if prev.get("mute") in (0, 1):
+                            try:
                                 self.SOAPSend(zoneIP, "/MediaRenderer", "/RenderingControl", "SetMute",
-                                              "<Channel>Master</Channel><DesiredMute>0</DesiredMute>")
-                            except Exception as e:
-                                self.logger.warning(f"[ANNOUNCE RESTORE] Device volume restore failed: {e}")
-                        # ========== /UNCONDITIONAL VOLUME RESTORE ==========
+                                              f"<Channel>Master</Channel><DesiredMute>{prev['mute']}</DesiredMute>")
+                            except Exception:
+                                pass
+                    # ========== /RESTORE VOLUME + MUTE EXACTLY ==========
 
-                        # Resume playback regardless
-                        self.SOAPSend(zoneIP, "/MediaRenderer", "/AVTransport", "Play", "<Speed>1</Speed>")
-                        self.logger.debug("[ANNOUNCE RESTORE] Previous stream resumed.")
+                    # Only resume transport to the *previous* state
+                    state = (prev.get("state") or "UNKNOWN").upper()
+                    if had_prior_uri:
+                        if state == "PLAYING":
+                            self.SOAPSend(zoneIP, "/MediaRenderer", "/AVTransport", "Play", "<Speed>1</Speed>")
+                            self.logger.debug("[ANNOUNCE RESTORE] Resumed PLAYING")
+                        elif state in ("PAUSED_PLAYBACK", "PAUSED"):
+                            try:
+                                self.SOAPSend(zoneIP, "/MediaRenderer", "/AVTransport", "Pause", "")
+                                self.logger.debug("[ANNOUNCE RESTORE] Restored PAUSED")
+                            except Exception:
+                                try:
+                                    self.SOAPSend(zoneIP, "/MediaRenderer", "/AVTransport", "Play", "<Speed>1</Speed>")
+                                    self.SOAPSend(zoneIP, "/MediaRenderer", "/AVTransport", "Pause", "")
+                                    self.logger.debug("[ANNOUNCE RESTORE] Pause via Play→Pause fallback")
+                                except Exception as e:
+                                    self.logger.debug(f"[ANNOUNCE RESTORE] Pause fallback failed: {e}")
+                        elif state == "STOPPED":
+                            try:
+                                self.SOAPSend(zoneIP, "/MediaRenderer", "/AVTransport", "Stop", "")
+                                self.logger.debug("[ANNOUNCE RESTORE] Restored STOPPED")
+                            except Exception as e:
+                                self.logger.debug(f"[ANNOUNCE RESTORE] Stop failed: {e}")
                     else:
-                        self.logger.debug("[ANNOUNCE RESTORE] No prior URI captured; leaving device at announcement source.")
+                        try:
+                            self.SOAPSend(zoneIP, "/MediaRenderer", "/AVTransport", "Stop", "")
+                            self.logger.debug("[ANNOUNCE RESTORE] No prior URI → STOP")
+                        except Exception:
+                            pass
+
                 except Exception as e:
                     self.logger.warning(f"⚠️ Failed to restore previous playback after announcement: {e}")
             else:
-                self.plugin.errorLog("Unable to read MP3 file.  Announcement aborted.")
+                self.plugin.errorLog("Unable to read MP3/AIFF file. Announcement aborted.")
+
+
+
+                
 
 
                 
