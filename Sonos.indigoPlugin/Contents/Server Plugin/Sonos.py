@@ -5020,7 +5020,8 @@ class SonosPlugin(object):
 ############################################################################################
 
     def actionAnnouncement(self, pluginAction, action):
-
+        #self.logger.error(f"[ANNOUNCE TOP] action={action!r}")
+        #self.logger.error(f"[ANNOUNCE TOP PROPS] {dict(pluginAction.props or {})}")
         self.logger.debug(f"[ANNOUNCE ENTRY] action={action!r} props_present={pluginAction.props is not None}")
         if pluginAction.props:
             self.logger.debug(f"[ANNOUNCE PROPS] keys={sorted(pluginAction.props.keys())}")
@@ -5363,15 +5364,37 @@ class SonosPlugin(object):
         elif action == "announcementMP3":
             # ---- normalize props & log what the UI actually sent ----
             props = pluginAction.props or {}
+            #self.logger.error(f"[MP3 RAW PROPS] {dict(props)}")
+            # ---- normalize props & log what the UI actually sent ----
+            props = pluginAction.props or {}
 
             # Source (e.g., "TTS" or "File"); normalize gently
             source_raw = props.get("ttsORfile") or props.get("source")
             source = (source_raw.strip().lower() if isinstance(source_raw, str) else None)
 
             # Sound file (when using File source)
-            sf_raw = props.get("sound_file") or props.get("file") or ""
-            sound_file = sf_raw.strip() if isinstance(sf_raw, str) else ""
+            #sf_raw = props.get("sound_file") or props.get("file") or ""
+            #sound_file = sf_raw.strip() if isinstance(sf_raw, str) else ""
+            mp3_candidates = {
+                k: v for k, v in props.items()
+                if "file" in str(k).lower()
+                or "sound" in str(k).lower()
+                or ".mp3" in str(v).lower()
+                or ".aiff" in str(v).lower()
+            }
+            #self.logger.error(f"[MP3 FILE CANDIDATES] {mp3_candidates}")
 
+            sf_raw = (
+                props.get("sound_file")
+                or props.get("soundFile")
+                or props.get("SoundFile")
+                or props.get("sound")
+                or props.get("audioFile")
+                or props.get("announcementFile")
+                or props.get("file")
+                or ""
+            )
+            sound_file = sf_raw.strip() if isinstance(sf_raw, str) else ""
             # If source not provided but a file is present, assume "file"
             if not source and sound_file:
                 source = "file"
@@ -5476,23 +5499,50 @@ class SonosPlugin(object):
                     if not fname:
                         self.logger.error("❌ No sound file selected in 'sound_file'.")
                         return
+
                     src = os.path.join(self.SoundFilePath or "", fname)
                     if not os.path.isfile(src):
                         self.logger.error(f"❌ Sound file not found: {src}")
                         return
+
+                    # IMPORTANT:
+                    # The announcement HTTP server serves from self.SoundFilePath,
+                    # so write announcement.mp3 there, not the plugin working directory.
+                    dst = os.path.join(self.SoundFilePath or "", "announcement.mp3")
+
+
+
                     try:
-                        os.system(f'cp -pr "{src}" "announcement.mp3"')
+                        import shutil
+
+                        if os.path.exists(dst):
+                            os.remove(dst)
+
+                        shutil.copyfile(src, dst)
+
+                        self.logger.info(
+                            f"[ANNOUNCE COPY] {os.path.basename(src)} → announcement.mp3 "
+                            f"({os.path.getsize(src)} bytes)"
+                        )
+
                     except Exception as e:
                         self.logger.error(f"❌ Failed to prepare announcement file: {e}")
                         return
+
+
+
                     announcement = f"FILE [{fname}]"
                     s_announcement = "announcement.mp3"
                     tts_delay = 0
 
                 indigo.server.log("Announcement: %s, Volume: %s" % (announcement, zp_volume))
+
             except Exception as e:
                 self.logger.error(f"❌ Error while preparing announcement audio: {e}")
                 return
+
+
+
 
             # helper: coerce any value to an int, or None if not possible
             def _as_int(v):
@@ -5726,7 +5776,9 @@ class SonosPlugin(object):
                         return
 
                     # 5) Build and send
-                    announcement_uri = f"http://{http_server}:{http_port}/{announcement_file}"
+                    #announcement_uri = f"http://{http_server}:{http_port}/{announcement_file}"
+                    import time
+                    announcement_uri = f"http://{http_server}:{http_port}/{announcement_file}?t={int(time.time() * 1000)}"
                     soap_payload = (
                         f"<CurrentURI>{announcement_uri}</CurrentURI>"
                         f"<CurrentURIMetaData></CurrentURIMetaData>"
