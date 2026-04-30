@@ -713,7 +713,7 @@
 
 			<Field id="sound_file" type="menu" visibleBindingId="ttsORfile" visibleBindingValue="FILE">
 				<Label>Sound File:</Label>
-				<List class="self" method="getZP_SoundFiles" dynamicReload="yes"/>
+				<List class="self" method="getSoundFilesList" dynamicReload="yes"/>
 			</Field>
 			<Field id="zp_volume" type="textfield">
 				<Label>Level (0-100):</Label>
@@ -872,8 +872,22 @@
 
 
 
+<MenuAction id="AuditGroupStatesMenu">
+    <Name>Audit Group States (Menu)</Name>
+    <CallbackMethod>menuAuditGroupStates</CallbackMethod>
+</MenuAction>
+
+<Action id="AuditGroupStatesAction" uiPath="Audit / Debug" userVisible="true">
+    <Name>Audit Group States (Control Page)</Name>
+    <CallbackMethod>actionAuditGroupStates</CallbackMethod>
+</Action>
 
 
+
+<Action id="Auditdump_groups_to_log" uiPath="Audit / Debug" userVisible="true">
+    <Name>Dump Groups To Log (Control Page)</Name>
+    <CallbackMethod>actiondump_groups_to_log</CallbackMethod>
+</Action>
 
 
 </Actions>
