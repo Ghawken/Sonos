@@ -157,7 +157,7 @@ class Plugin(indigo.PluginBase):
             if not getattr(self, "SoundFilePath", None):
                 self.SoundFilePath = self.pluginPrefs.get(
                     "SoundFilePath",
-                    "/Library/Application Support/Perceptive Automation/Indigo 2024.2/AudioFiles",
+                    os.path.join(indigo.server.getInstallFolderPath(), "AudioFiles"),
                 )
 
             # Lazy load if empty
@@ -183,7 +183,7 @@ class Plugin(indigo.PluginBase):
             if not getattr(self, "SoundFilePath", None):
                 self.SoundFilePath = self.pluginPrefs.get(
                     "SoundFilePath",
-                    "/Library/Application Support/Perceptive Automation/Indigo 2024.2/AudioFiles",
+                    os.path.join(indigo.server.getInstallFolderPath(), "AudioFiles"),
                 )
 
             self.Sound_Files = []
