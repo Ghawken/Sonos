@@ -6078,16 +6078,21 @@ class SonosPlugin(object):
                     if (self.HTTPStreamingIP != http_ip) or (self.HTTPStreamingPort != http_port):
                         self.HTTPStreamingIP = http_ip
                         self.HTTPStreamingPort = http_port
-                    #if (self.HTTPStreamingIP != self.plugin.pluginPrefs["HTTPStreamingIP"]) or (self.HTTPStreamingPort != self.plugin.pluginPrefs["HTTPStreamingPort"]):
-                    #    self.HTTPStreamingIP = self.plugin.pluginPrefs["HTTPStreamingIP"]
-                    #    self.HTTPStreamingPort = self.plugin.pluginPrefs["HTTPStreamingPort"]
 
-                        self.HTTPSTreamerOn = False
+                        # Tear down the existing streamer (if any) before spawning a new one,
+                        # otherwise the next bind() fails with EADDRINUSE on port 8888.
+                        self.HTTPStreamerOn = False
+                        if getattr(self, "httpd", None):
+                            try:
+                                self.httpd.server_close()
+                            except Exception:
+                                pass
+                            self.httpd = None
+
                         v = Thread(target=self.HTTPStreamer)
                         v.setDaemon(True)
                         v.start()
                 except Exception as exception_error:
-                    #self.logger.error(f"[{time.asctime()}] HTTPStreamer not functioning.")
                     import traceback
                     self.logger.error(f"[{time.asctime()}] HTTPStreamer not functioning: {exception_error}")
                     self.safe_debug(traceback.format_exc())
@@ -6160,17 +6165,19 @@ class SonosPlugin(object):
                     self.logger.error(f"[{time.asctime()}] Could not retrieve IVONA parameters.")
 
                 try:
-                    if (self.Polly != self.plugin.pluginPrefs['Polly']) or \
-                            (self.PollyaccessKey != self.plugin.pluginPrefs['PollyaccessKey']) or \
-                            (self.PollysecretKey != self.plugin.pluginPrefs['PollysecretKey']):
-                        self.Polly = self.plugin.pluginPrefs['Polly']
+                    polly_pref   = self.plugin.pluginPrefs.get('Polly', False)
+                    polly_access = self.plugin.pluginPrefs.get('PollyaccessKey', '')
+                    polly_secret = self.plugin.pluginPrefs.get('PollysecretKey', '')
+                    if (self.Polly != polly_pref) or \
+                            (self.PollyaccessKey != polly_access) or \
+                            (self.PollysecretKey != polly_secret):
+                        self.Polly = polly_pref
                         if self.Polly:
-                            self.PollyaccessKey = self.plugin.pluginPrefs['PollyaccessKey']
-                            self.PollysecretKey = self.plugin.pluginPrefs['PollysecretKey']
-                        if self.Polly:
+                            self.PollyaccessKey = polly_access
+                            self.PollysecretKey = polly_secret
                             self.PollyVoices()
                 except Exception as exception_error:
-                    self.logger.error(f"[{time.asctime()}] Could not retrieve Polly parameters.")
+                    self.logger.error(f"[{time.asctime()}] Could not retrieve Polly parameters: {exception_error}")
 
                 try:
                     if (self.MSTranslate != self.plugin.pluginPrefs['MSTranslate']) or \
@@ -6823,12 +6830,16 @@ class SonosPlugin(object):
             self.logger.info(f"Serving HTTP Streamer on {self.HTTPServer} [{sa[0]}], port {sa[1]}")
             self.HTTPStreamerOn = True
             while self.HTTPStreamerOn:
-                self.httpd.handle_request()
+                try:
+                    self.httpd.handle_request()
+                except Exception:
+                    if not self.HTTPStreamerOn:
+                        break  # intentional teardown via prefs reload
+                    raise
 
-        # except Exception as e:
-        #     self.logger.error(f"Cannot start HTTP Streamer on {self.HTTPServer}: {e}")
         except Exception as exception_error:
-            self.exception_handler(f"Cannot start HTTP Streamer on {self.HTTPServer}: {exception_error}", True)  # Log error and display failing statement
+            if self.HTTPStreamerOn:
+                self.exception_handler(f"Cannot start HTTP Streamer on {self.HTTPServer}: {exception_error}", True)
 
 
     def _set_subscription_callback(self, sub, indigo_device, service_name):
