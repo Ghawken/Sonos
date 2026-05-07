@@ -2198,7 +2198,7 @@ class SonosPlugin(object):
 
         XMChannel.from_dict = staticmethod(patched_from_dict)
 
-        cache_path = "/Library/Application Support/Perceptive Automation/Indigo 2024.2/Preferences/Plugins/siriusxm_channel_cache.json"
+        cache_path = os.path.join(indigo.server.getInstallFolderPath(), "Preferences", "Plugins", "siriusxm_channel_cache.json")
         self.logger.info("📂 Checking for SiriusXM channel cache...")
 
         sxm_username = self.pluginPrefs.get("SiriusXMID", "").strip()
@@ -2283,7 +2283,7 @@ class SonosPlugin(object):
 
 
     def load_siriusxm_cache(self):
-        cache_path = "/Library/Application Support/Perceptive Automation/Indigo 2024.2/Preferences/Plugins/siriusxm_channel_cache.json"
+        cache_path = os.path.join(indigo.server.getInstallFolderPath(), "Preferences", "Plugins", "siriusxm_channel_cache.json")
 
         if os.path.exists(cache_path):
             try:
@@ -2301,7 +2301,7 @@ class SonosPlugin(object):
 
 
     def save_siriusxm_cache(self):
-        cache_path = "/Library/Application Support/Perceptive Automation/Indigo 2024.2/Preferences/Plugins/sxm_channels_cache.json"
+        cache_path = os.path.join(indigo.server.getInstallFolderPath(), "Preferences", "Plugins", "sxm_channels_cache.json")
         try:
             with open(cache_path, "w") as f:
                 json.dump(self.siriusxm_channels, f, indent=2)
@@ -2312,7 +2312,7 @@ class SonosPlugin(object):
 
 
     def load_siriusxm_cache(self):
-        cache_path = "/Library/Application Support/Perceptive Automation/Indigo 2024.2/Preferences/Plugins/sxm_channels_cache.json"
+        cache_path = os.path.join(indigo.server.getInstallFolderPath(), "Preferences", "Plugins", "sxm_channels_cache.json")
         try:
             with open(cache_path, "r") as f:
                 self.siriusxm_channels = json.load(f)
@@ -2453,7 +2453,7 @@ class SonosPlugin(object):
  
     def DeleteandDefine_SiriusXMCache(self):
         try:
-            cache_path = "/Library/Application Support/Perceptive Automation/Indigo 2024.2/Preferences/Plugins/siriusxm_channel_cache.json"
+            cache_path = os.path.join(indigo.server.getInstallFolderPath(), "Preferences", "Plugins", "siriusxm_channel_cache.json")
 
             if os.path.exists(cache_path):
                 os.remove(cache_path)
@@ -10462,7 +10462,7 @@ class SonosPlugin(object):
 
         ARTWORK_FOLDER = "/Library/Application Support/Perceptive Automation/images/Sonos/"
         DEFAULT_ART_PATH = ARTWORK_FOLDER + "default_artwork.jpg"
-        DEFAULT_ART_SRC = "/Library/Application Support/Perceptive Automation/Indigo 2024.2/Plugins/Sonos.indigoPlugin/Contents/Server Plugin/default_artwork.jpg"
+        DEFAULT_ART_SRC = os.path.join(os.path.dirname(__file__), "default_artwork.jpg")
         MAX_DOWNLOAD_ATTEMPTS = 3
 
         os.makedirs(ARTWORK_FOLDER, exist_ok=True)
@@ -10653,7 +10653,7 @@ class SonosPlugin(object):
 
         ARTWORK_FOLDER   = "/Library/Application Support/Perceptive Automation/images/Sonos/"
         DEFAULT_ART_PATH = ARTWORK_FOLDER + "default_artwork.jpg"
-        DEFAULT_ART_SRC  = "/Library/Application Support/Perceptive Automation/Indigo 2024.2/Plugins/Sonos.indigoPlugin/Contents/Server Plugin/default_artwork.jpg"
+        DEFAULT_ART_SRC  = os.path.join(os.path.dirname(__file__), "default_artwork.jpg")
         MAX_DOWNLOAD_ATTEMPTS = 3
 
         # Ensure paths exist
