@@ -115,7 +115,6 @@ ZP_LIST = []
 Sonos_Favorites = []
 Sonos_Playlists = []
 Sonos_RT_Fav_Stations = []
-Sonos_LineIn = []
 Sonos_Pandora = []
 Sonos_SiriusXM = []
 SavedState = []
@@ -1205,6 +1204,26 @@ class SonosPlugin(object):
                     self.SOAPSend (zoneIP, "/MediaRenderer", "/AVTransport", "Seek", "<Unit>TRACK_NR</Unit><Target>"+track_pos+"</Target>")
                     self.SOAPSend (zoneIP, "/MediaRenderer", "/AVTransport", "Play", "<Speed>1</Speed>")
                 indigo.server.log ("ZonePlayer: %s, Play: %s" % (dev.name, pTitle))
+                return
+
+            elif action_id == "ZP_LineIn":
+                setting = pluginAction.props.get("setting")
+                if not setting:
+                    self.logger.warning(f"⚠️ No Line-In source selected for {dev.name}")
+                    return
+                try:
+                    dev_src = indigo.devices[int(setting)]
+                except Exception as e:
+                    self.logger.error(f"❌ Invalid Line-In source device '{setting}': {e}")
+                    return
+                dev_src_LocalUID = dev_src.states.get('ZP_LocalUID')
+                if not dev_src_LocalUID:
+                    self.logger.error(f"❌ Selected Line-In source '{dev_src.name}' has no LocalUID; cannot switch.")
+                    return
+                self.SOAPSend(zoneIP, "/MediaRenderer", "/AVTransport", "SetAVTransportURI",
+                              f"<CurrentURI>x-rincon-stream:{dev_src_LocalUID}</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>")
+                self.SOAPSend(zoneIP, "/MediaRenderer", "/AVTransport", "Play", "<Speed>1</Speed>")
+                self.logger.info(f"🔊 {dev.name}: switched to Line-In source '{dev_src.states.get('ZP_ZoneName', dev_src.name)}'")
                 return
 
             ############################################################################################
@@ -11545,22 +11564,6 @@ class SonosPlugin(object):
         except Exception as exception_error:
             self.exception_handler(exception_error, True)  # Log error and display failing statement
 
-    def getLineIn(self, dev, val):
-        try:
-            global Sonos_LineIn
-            zoneName = dev.states['ZP_ZoneName']
-            LocalUID = dev.states['ZP_LocalUID']
-            for x in Sonos_LineIn:
-                if x[0] == dev.id:
-                    Sonos_LineIn.remove([x[0], x[1]])
-                    self.logger.info(f"LineIn: Removed: {LocalUID}, {x[1]}")
-            Sonos_LineIn.append([dev.id, val + ":" + zoneName])
-            self.logger.info(f"LineIn: {LocalUID}, {val}:{zoneName}")
-
-        except Exception as exception_error:
-            self.exception_handler(exception_error, True)  # Log error and display failing statement
-
-
     def getPandora(self, PandoraEmailAddress, PandoraPassword, PandoraNickname):
         global Sonos_Pandora
 
@@ -11864,7 +11867,10 @@ class SonosPlugin(object):
 
     def getZP_LineIn(self, filter=""):
         try:
-            return Sonos_LineIn
+            array = []
+            for dev in indigo.devices.iter("self.ZonePlayer"):
+                array.append((dev.id, dev.states['ZP_ZoneName']))
+            return array
 
         except Exception as exception_error:
             self.exception_handler(exception_error, True)  # Log error and display failing statement
