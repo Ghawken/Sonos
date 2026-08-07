@@ -317,7 +317,10 @@ class SonosPlugin(object):
         self.zone_group_state_cache = {}  # ✅ ensure this exists early
         # Cap SoCo's default 20s per-request timeout — one offline player must not
         # be able to stall dispatch-thread work for 20s at a time.
-        soco.config.REQUEST_TIMEOUT = 5.0
+        # NOTE: 'soco' is shadowed by a local variable later in __init__, so alias
+        # the module explicitly here.
+        import soco.config as _soco_config
+        _soco_config.REQUEST_TIMEOUT = 5.0
 
         # HTTP bits
         self.httpd = None
