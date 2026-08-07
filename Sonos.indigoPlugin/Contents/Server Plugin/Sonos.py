@@ -315,6 +315,9 @@ class SonosPlugin(object):
         self.ip_to_indigo_device = {}
         self.uuid_to_soco = {}
         self.zone_group_state_cache = {}  # ✅ ensure this exists early
+        # Cap SoCo's default 20s per-request timeout — one offline player must not
+        # be able to stall dispatch-thread work for 20s at a time.
+        soco.config.REQUEST_TIMEOUT = 5.0
 
         # HTTP bits
         self.httpd = None
@@ -438,10 +441,11 @@ class SonosPlugin(object):
             group_name = dev.states.get("GROUP_Name") or self.group_name_by_device_id.get(dev.id, "?")
             #self.logger.warning(f"⚠️ I set Group_Name early on to initialize for Londonmark script: Name= '{group_name}' Address= '{dev.address}'")            
             if soco:
-                try:
-                    self.uuid_to_indigo_device[soco.uid] = dev
-                except Exception as e:
-                    self.logger.warning(f"⚠️ Could not map UUID for device '{dev.name}': {e}")
+                uid = self.safe_uid(dev.address, soco)  # probe-gated; no repeated timeouts on offline players
+                if uid:
+                    self.uuid_to_indigo_device[uid] = dev
+                else:
+                    self.logger.debug(f"UUID for '{dev.name}' not yet resolvable (player offline?) — will map later")
 
 
 
@@ -3507,7 +3511,7 @@ class SonosPlugin(object):
                 live_grouped = False
                 live_group_name = dev.name
 
-                if soco:
+                if soco and self._ip_probe_ok(ip):  # offline player: is_coordinator/.group would block in network timeouts
                     # coordinator truth
                     try:
                         live_coord = bool(getattr(soco, "is_coordinator", False))
@@ -3648,7 +3652,7 @@ class SonosPlugin(object):
                 live_grouped = False
                 live_group_name = dev.name
 
-                if soco:
+                if soco and self._ip_probe_ok(ip):  # offline player: is_coordinator/.group would block in network timeouts
                     # coordinator truth
                     try:
                         live_coord = bool(getattr(soco, "is_coordinator", False))
@@ -4454,6 +4458,8 @@ class SonosPlugin(object):
         # ─────────────────────────────────────────────────────────────────────────────
         for loop_ip, soco in self.soco_by_ip.items():
             try:
+                if not self._ip_probe_ok(loop_ip):
+                    continue  # offline player — .group would block in a network timeout
                 group = soco.group
                 if not group or not group.coordinator:
                     continue
@@ -4486,6 +4492,8 @@ class SonosPlugin(object):
 
         for loop_ip, soco in self.soco_by_ip.items():
             try:
+                if not self._ip_probe_ok(loop_ip):
+                    continue  # offline player — .group would block in a network timeout
                 group = soco.group
                 if not group or not group.coordinator:
                     continue
@@ -7306,6 +7314,63 @@ class SonosPlugin(object):
         except OSError:
             return False
 
+    def _ip_probe_ok(self, ip, ttl=30.0, timeout=1.0):
+        """Reachability check with a short negative cache (shared with the ZGT walk).
+
+        A player that fails the probe is skipped for `ttl` seconds so hot loops
+        (group evaluation, UID lookups, topology dumps) can't repeatedly hammer
+        an offline player with 10-20s SoCo network timeouts — one dead device
+        was enough to make Indigo log "timeout waiting for plugin response".
+        """
+        if not ip:
+            return False
+        if not hasattr(self, "_zgt_unreachable_until"):
+            self._zgt_unreachable_until = {}
+        now = time.time()
+        if self._zgt_unreachable_until.get(ip, 0.0) > now:
+            return False
+        if self.is_host_reachable(ip, timeout=timeout):
+            return True
+        self._zgt_unreachable_until[ip] = now + ttl
+        return False
+
+    def safe_uid(self, ip, soco_dev):
+        """Resolve a SoCo player's UID without repeated network timeouts.
+
+        SoCo's .uid on a cold instance polls ZoneGroupState against the player's
+        own IP — for an offline player that's a full network timeout on EVERY
+        access. Resolution order: plugin cache → SoCo's own cache → the Indigo
+        device's ZP_LocalUID state → (only if the host answers a 1s probe) the
+        network. Returns None when unresolvable.
+        """
+        if not hasattr(self, "uid_by_ip"):
+            self.uid_by_ip = {}
+        uid = self.uid_by_ip.get(ip)
+        if uid:
+            return uid
+        # SoCo caches _uid after any successful fetch (or when parsed from ZGT XML)
+        cached = getattr(soco_dev, "_uid", None) if soco_dev is not None else None
+        if cached:
+            self.uid_by_ip[ip] = cached
+            return cached
+        # The Indigo device already knows its UID from a previous session
+        idev = (getattr(self, "ip_to_indigo_device", {}) or {}).get(ip)
+        if idev is not None:
+            state_uid = (idev.states.get("ZP_LocalUID") or "").strip()
+            if state_uid:
+                self.uid_by_ip[ip] = state_uid
+                return state_uid
+        if soco_dev is None or not self._ip_probe_ok(ip):
+            return None
+        try:
+            uid = soco_dev.uid
+            if uid:
+                self.uid_by_ip[ip] = uid
+            return uid
+        except Exception as e:
+            self.logger.debug(f"safe_uid: could not fetch UID from {ip}: {e}")
+            return None
+
     def retry_deferred_devices(self):
         """Retry startup for devices that were offline when deviceStartComm ran.
 
@@ -9421,12 +9486,11 @@ class SonosPlugin(object):
 
 
     def get_soco_by_uuid(self, uuid):
-        for ip, soco in self.soco_by_ip.items():
-            try:
-                if soco.uid == uuid:
-                    return soco
-            except Exception as e:
-                self.logger.warning(f"⚠️ Could not retrieve UID from SoCo at {ip}: {e}")
+        # safe_uid resolves from cache / Indigo state and probe-gates any network
+        # access — previously every call burned a 10s timeout per offline player.
+        for ip, soco in list(self.soco_by_ip.items()):
+            if self.safe_uid(ip, soco) == uuid:
+                return soco
         self.logger.debug(f"🔍 No SoCo found for UUID {uuid}")
         return None
 
