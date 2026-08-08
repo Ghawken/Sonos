@@ -7403,6 +7403,7 @@ class SonosPlugin(object):
         deferred = getattr(self, "deferred_start_devices", None)
         if not deferred:
             return
+        uid_to_ip = None  # lazy: at most one discovery sweep per retry pass
         for dev_id in list(deferred):
             try:
                 dev = indigo.devices[dev_id]
@@ -7419,6 +7420,58 @@ class SonosPlugin(object):
                     self.deviceStartComm(dev)
                 except Exception as e:
                     self.logger.error(f"❌ Deferred deviceStartComm failed for {dev.name}: {e}")
+                continue
+
+            # Configured IP still dead — but the IP is not the player's identity
+            # (forum t=28960): look for the same RINCON UID at a new address (DHCP
+            # move) and heal the stored address so the device recovers without the
+            # user deleting/recreating it or touching control pages.
+            uid = (dev.states.get("ZP_LocalUID") or "").strip()
+            if not uid:
+                continue
+            if uid_to_ip is None:
+                uid_to_ip = self._discover_uid_to_ip()
+            new_ip = uid_to_ip.get(uid, "")
+            if new_ip and new_ip != dev.address:
+                self.logger.info(
+                    f"🩹 {dev.name} answered discovery at {new_ip} (configured {dev.address}) — "
+                    f"updating device address; Indigo will restart the device.")
+                try:
+                    props = dev.pluginProps
+                    props["address"] = new_ip
+                    deferred.discard(dev_id)
+                    dev.replacePluginPropsOnServer(props)
+                except Exception as e:
+                    self.logger.error(f"❌ Could not update address for {dev.name}: {e}")
+
+    def _discover_uid_to_ip(self):
+        """One SSDP sweep mapping live players' RINCON UIDs → current IPs.
+
+        Used only from the deferred-retry path, throttled to one sweep per five
+        minutes so a long-term-offline player doesn't keep the network busy with
+        multicast discovery every 60s retry tick.
+        """
+        now = time.time()
+        if now - getattr(self, "_last_heal_discovery", 0.0) < 300.0:
+            return getattr(self, "_heal_uid_to_ip", {}) or {}
+        self._last_heal_discovery = now
+        mapping = {}
+        try:
+            found = soco.discover(timeout=5) or set()
+        except Exception as e:
+            self.logger.debug(f"self-heal discovery failed: {e}")
+            found = set()
+        for player in found:
+            try:
+                ip = player.ip_address
+                self.soco_by_ip[ip] = player
+                player_uid = self.safe_uid(ip, player)
+                if player_uid:
+                    mapping[player_uid] = ip
+            except Exception:
+                continue
+        self._heal_uid_to_ip = mapping
+        return mapping
 
     def deviceStartComm(self, indigo_device):
         #self.logger.debug(f"🧪 deviceStartComm CALLED for {indigo_device.name}")
@@ -10262,10 +10315,28 @@ class SonosPlugin(object):
             except Exception as e:
                 self.logger.debug(f"poller cleanup failed for {dev.name}: {e}")
 
-            # 3) Clean local maps
+            # 3) Clean local maps — match IP-keyed entries by device id where possible
+            # so entries made under an old address (IP just changed in the config
+            # dialog) are purged too, not only the current one.
             try:
-                if hasattr(self, "ip_to_indigo_dev"):
-                    self.ip_to_indigo_dev = {k: v for k, v in self.ip_to_indigo_dev.items() if v.id != dev.id}
+                dev_ip = (dev.pluginProps.get("address") or dev.address or "").strip()
+                if hasattr(self, "devices") and isinstance(self.devices, dict):
+                    self.devices.pop(dev.id, None)
+                if hasattr(self, "deferred_start_devices"):
+                    self.deferred_start_devices.discard(dev.id)
+                if hasattr(self, "ip_to_indigo_device"):
+                    stale_ips = [k for k, v in self.ip_to_indigo_device.items()
+                                 if getattr(v, "id", None) == dev.id]
+                    for ip in stale_ips:
+                        self.ip_to_indigo_device.pop(ip, None)
+                        for map_name in ("soco_by_ip", "ip_to_soco_device", "uid_by_ip"):
+                            m = getattr(self, map_name, None)
+                            if isinstance(m, dict):
+                                m.pop(ip, None)
+                for map_name in ("soco_by_ip", "ip_to_soco_device", "uid_by_ip"):
+                    m = getattr(self, map_name, None)
+                    if isinstance(m, dict):
+                        m.pop(dev_ip, None)
             except Exception as e:
                 self.logger.debug(f"map cleanup failed for {dev.name}: {e}")
 
