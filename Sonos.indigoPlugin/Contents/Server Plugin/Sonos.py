@@ -5872,12 +5872,14 @@ class SonosPlugin(object):
                         self.actionDirect(PA(dev.id), "setStandalone")
 
                     # add announcement zones to group (ensure 'setting' is a string)
+                    # addPlayerToZone semantics: bound device = JOINER, 'setting' = COORDINATOR,
+                    # so each additional zone joins GM's group (GM stays coordinator).
                     self.plugin.debugLog("Announcement: add announcement zones to group")
                     itemcount = 0
                     for item in AnnouncementZones:
                         dev = indigo.devices[int(item)]
                         if itemcount > 0:
-                            self.actionDirect(PA(GM.id, {'setting': str(dev.id)}), "addPlayerToZone")
+                            self.actionDirect(PA(dev.id, {'setting': str(GM.id)}), "addPlayerToZone")
                         itemcount += 1
                 else:
                     # Nothing to split here; just ensure transport is stopped on GM
@@ -6319,92 +6321,102 @@ class SonosPlugin(object):
 
 
 
-                try:
-                    if (self.Pandora != self.plugin.pluginPrefs['Pandora']) or \
-                            (self.PandoraEmailAddress != self.plugin.pluginPrefs['PandoraEmailAddress']) or \
-                            (self.PandoraPassword != self.plugin.pluginPrefs['PandoraPassword']) or \
-                            (self.PandoraNickname != self.plugin.pluginPrefs['PandoraNickname']):
-                        self.Pandora = self.plugin.pluginPrefs['Pandora']
-                        self.PandoraEmailAddress = self.plugin.pluginPrefs['PandoraEmailAddress']
-                        self.PandoraPassword = self.plugin.pluginPrefs['PandoraPassword']
-                        self.PandoraNickname = self.plugin.pluginPrefs['PandoraNickname']
-                        if self.Pandora:
-                            self.getPandora(self.PandoraEmailAddress, self.PandoraPassword, self.PandoraNickname)
-                except Exception as exception_error:
-                    self.logger.error(f"[{time.asctime()}] Could not retrieve Pandora credentials.")
-
-                try:
-                    if (self.Pandora2 != self.plugin.pluginPrefs['Pandora2']) or \
-                            (self.PandoraEmailAddress2 != self.plugin.pluginPrefs['PandoraEmailAddress2']) or \
-                            (self.PandoraPassword2 != self.plugin.pluginPrefs['PandoraPassword2']) or \
-                            (self.PandoraNickname2 != self.plugin.pluginPrefs['PandoraNickname2']):
-                        self.Pandora2 = self.plugin.pluginPrefs['Pandora2']
-                        self.PandoraEmailAddress2 = self.plugin.pluginPrefs['PandoraEmailAddress2']
-                        self.PandoraPassword2 = self.plugin.pluginPrefs['PandoraPassword2']
-                        self.PandoraNickname2 = self.plugin.pluginPrefs['PandoraNickname2']
-                        if self.Pandora2:
-                            self.getPandora(self.PandoraEmailAddress2, self.PandoraPassword2, self.PandoraNickname2)
-                except Exception as exception_error:
-                    self.logger.error(f"[{time.asctime()}] Could not retrieve secondary Pandora credentials.")
-
-                try:
-                    if (self.SiriusXM != self.plugin.pluginPrefs['SiriusXM']) or \
-                            (self.SiriusXMID != self.plugin.pluginPrefs['SiriusXMID']) or \
-                            (self.SiriusXMPassword != self.plugin.pluginPrefs['SiriusXMPassword']):
-                        self.SiriusXM = self.plugin.pluginPrefs['SiriusXM']
-                        self.SiriusXMID = self.plugin.pluginPrefs['SiriusXMID']
-                        self.SiriusXMPassword = self.plugin.pluginPrefs['SiriusXMPassword']
-                        if self.SiriusXM:
-                            self.getSiriusXM()
-                except Exception as exception_error:
-                    self.logger.error(f"[{time.asctime()}] Could not retrieve SiriusXM parameters.")
-
-                try:
-                    if (self.IVONA != self.plugin.pluginPrefs['IVONA']) or \
-                            (self.IVONAaccessKey != self.plugin.pluginPrefs['IVONAaccessKey']) or \
-                            (self.IVONAsecretKey != self.plugin.pluginPrefs['IVONAsecretKey']):
-                        self.IVONA = self.plugin.pluginPrefs['IVONA']
-                        if self.IVONA:
-                            self.IVONAaccessKey = self.plugin.pluginPrefs['IVONAaccessKey']
-                            self.IVONAsecretKey = self.plugin.pluginPrefs['IVONAsecretKey']
-                        if self.IVONA:
-                            self.IVONAVoices()
-                except Exception as exception_error:
-                    self.logger.error(f"[{time.asctime()}] Could not retrieve IVONA parameters.")
-
-                try:
-                    polly_pref   = self.plugin.pluginPrefs.get('Polly', False)
-                    polly_access = self.plugin.pluginPrefs.get('PollyaccessKey', '')
-                    polly_secret = self.plugin.pluginPrefs.get('PollysecretKey', '')
-                    if (self.Polly != polly_pref) or \
-                            (self.PollyaccessKey != polly_access) or \
-                            (self.PollysecretKey != polly_secret):
-                        self.Polly = polly_pref
-                        if self.Polly:
-                            self.PollyaccessKey = polly_access
-                            self.PollysecretKey = polly_secret
-                            self.PollyVoices()
-                except Exception as exception_error:
-                    self.logger.error(f"[{time.asctime()}] Could not retrieve Polly parameters: {exception_error}")
-
-                try:
-                    if (self.MSTranslate != self.plugin.pluginPrefs['MSTranslate']) or \
-                            (self.MSTranslateClientID != self.plugin.pluginPrefs['MSTranslateClientID']) or \
-                            (self.MSTranslateClientSecret != self.plugin.pluginPrefs['MSTranslateClientSecret']):
-                        self.MSTranslate = self.plugin.pluginPrefs['MSTranslate']
-                        if self.MSTranslate:
-                            self.MSTranslateClientID = self.plugin.pluginPrefs['MSTranslateClientID']
-                            self.MSTranslateClientSecret = self.plugin.pluginPrefs['MSTranslateClientSecret']
-                        if self.MSTranslate:
-                            self.MSTranslateVoices = self.MicrosoftTranslateLanguages()
-                except Exception as exception_error:
-                    self.logger.error(f"[{time.asctime()}] Could not retrieve MSTranslate parameters.")
+                self.processServicePrefs()
 
                 self.logger.info(f"[{time.asctime()}] Processed plugin preferences.")
                 return True
 
         except Exception as exception_error:
             self.exception_handler(exception_error, True)  # Log error and display failing statement
+
+    def processServicePrefs(self):
+        """Load/refresh streaming-service and TTS credentials from pluginPrefs.
+
+        Called from closedPrefsConfigUi and from startup() — the original plugin
+        loaded these at startup via closedPrefsConfigUi(None, None); without a
+        startup call the TTS keys stay None until the config dialog is re-saved
+        (e.g. Polly announcements fail with "Unable to locate credentials").
+        """
+        try:
+            if (self.Pandora != self.plugin.pluginPrefs['Pandora']) or \
+                    (self.PandoraEmailAddress != self.plugin.pluginPrefs['PandoraEmailAddress']) or \
+                    (self.PandoraPassword != self.plugin.pluginPrefs['PandoraPassword']) or \
+                    (self.PandoraNickname != self.plugin.pluginPrefs['PandoraNickname']):
+                self.Pandora = self.plugin.pluginPrefs['Pandora']
+                self.PandoraEmailAddress = self.plugin.pluginPrefs['PandoraEmailAddress']
+                self.PandoraPassword = self.plugin.pluginPrefs['PandoraPassword']
+                self.PandoraNickname = self.plugin.pluginPrefs['PandoraNickname']
+                if self.Pandora:
+                    self.getPandora(self.PandoraEmailAddress, self.PandoraPassword, self.PandoraNickname)
+        except Exception as exception_error:
+            self.logger.error(f"[{time.asctime()}] Could not retrieve Pandora credentials.")
+
+        try:
+            if (self.Pandora2 != self.plugin.pluginPrefs['Pandora2']) or \
+                    (self.PandoraEmailAddress2 != self.plugin.pluginPrefs['PandoraEmailAddress2']) or \
+                    (self.PandoraPassword2 != self.plugin.pluginPrefs['PandoraPassword2']) or \
+                    (self.PandoraNickname2 != self.plugin.pluginPrefs['PandoraNickname2']):
+                self.Pandora2 = self.plugin.pluginPrefs['Pandora2']
+                self.PandoraEmailAddress2 = self.plugin.pluginPrefs['PandoraEmailAddress2']
+                self.PandoraPassword2 = self.plugin.pluginPrefs['PandoraPassword2']
+                self.PandoraNickname2 = self.plugin.pluginPrefs['PandoraNickname2']
+                if self.Pandora2:
+                    self.getPandora(self.PandoraEmailAddress2, self.PandoraPassword2, self.PandoraNickname2)
+        except Exception as exception_error:
+            self.logger.error(f"[{time.asctime()}] Could not retrieve secondary Pandora credentials.")
+
+        try:
+            if (self.SiriusXM != self.plugin.pluginPrefs['SiriusXM']) or \
+                    (self.SiriusXMID != self.plugin.pluginPrefs['SiriusXMID']) or \
+                    (self.SiriusXMPassword != self.plugin.pluginPrefs['SiriusXMPassword']):
+                self.SiriusXM = self.plugin.pluginPrefs['SiriusXM']
+                self.SiriusXMID = self.plugin.pluginPrefs['SiriusXMID']
+                self.SiriusXMPassword = self.plugin.pluginPrefs['SiriusXMPassword']
+                if self.SiriusXM:
+                    self.getSiriusXM()
+        except Exception as exception_error:
+            self.logger.error(f"[{time.asctime()}] Could not retrieve SiriusXM parameters.")
+
+        try:
+            if (self.IVONA != self.plugin.pluginPrefs['IVONA']) or \
+                    (self.IVONAaccessKey != self.plugin.pluginPrefs['IVONAaccessKey']) or \
+                    (self.IVONAsecretKey != self.plugin.pluginPrefs['IVONAsecretKey']):
+                self.IVONA = self.plugin.pluginPrefs['IVONA']
+                if self.IVONA:
+                    self.IVONAaccessKey = self.plugin.pluginPrefs['IVONAaccessKey']
+                    self.IVONAsecretKey = self.plugin.pluginPrefs['IVONAsecretKey']
+                if self.IVONA:
+                    self.IVONAVoices()
+        except Exception as exception_error:
+            self.logger.error(f"[{time.asctime()}] Could not retrieve IVONA parameters.")
+
+        try:
+            polly_pref   = self.plugin.pluginPrefs.get('Polly', False)
+            polly_access = self.plugin.pluginPrefs.get('PollyaccessKey', '')
+            polly_secret = self.plugin.pluginPrefs.get('PollysecretKey', '')
+            if (self.Polly != polly_pref) or \
+                    (self.PollyaccessKey != polly_access) or \
+                    (self.PollysecretKey != polly_secret):
+                self.Polly = polly_pref
+                if self.Polly:
+                    self.PollyaccessKey = polly_access
+                    self.PollysecretKey = polly_secret
+                    self.PollyVoices()
+        except Exception as exception_error:
+            self.logger.error(f"[{time.asctime()}] Could not retrieve Polly parameters: {exception_error}")
+
+        try:
+            if (self.MSTranslate != self.plugin.pluginPrefs['MSTranslate']) or \
+                    (self.MSTranslateClientID != self.plugin.pluginPrefs['MSTranslateClientID']) or \
+                    (self.MSTranslateClientSecret != self.plugin.pluginPrefs['MSTranslateClientSecret']):
+                self.MSTranslate = self.plugin.pluginPrefs['MSTranslate']
+                if self.MSTranslate:
+                    self.MSTranslateClientID = self.plugin.pluginPrefs['MSTranslateClientID']
+                    self.MSTranslateClientSecret = self.plugin.pluginPrefs['MSTranslateClientSecret']
+                if self.MSTranslate:
+                    self.MSTranslateVoices = self.MicrosoftTranslateLanguages()
+        except Exception as exception_error:
+            self.logger.error(f"[{time.asctime()}] Could not retrieve MSTranslate parameters.")
 
 
 
@@ -6883,6 +6895,15 @@ class SonosPlugin(object):
 
         # 📥 Continue normal Sonos initialization
         # Split into smaller guarded sections so later steps still run.
+
+        # Load streaming-service/TTS credentials (Pandora, SiriusXM, IVONA, Polly,
+        # MSTranslate) from pluginPrefs — the original plugin did this at startup
+        # via closedPrefsConfigUi(None, None); without it Polly/IVONA keys remain
+        # None until the config dialog is re-saved.
+        try:
+            self.processServicePrefs()
+        except Exception as e:
+            self.logger.error(f"❌ Failed to load service credentials from prefs (continuing): {e}")
 
 
 
