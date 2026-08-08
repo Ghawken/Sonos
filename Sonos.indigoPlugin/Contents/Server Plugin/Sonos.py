@@ -3300,6 +3300,9 @@ class SonosPlugin(object):
 
             ip, port, root = self.get_announce_http_config()
             os.makedirs(root, exist_ok=True)
+            # Remember the root actually being served — announcement builders must
+            # write their audio here (prefs may change after the server started).
+            self._announce_http_root = root
 
             class AnnouncementHandler(http.server.SimpleHTTPRequestHandler):
                 def __init__(self, *args, **kwargs):
@@ -5648,12 +5651,19 @@ class SonosPlugin(object):
                 return
 
             # ===== build/prepare the announcement audio asset =====
+            # Every engine must write into the root the 8889 announce server
+            # actually serves, and the duration probe below must read that same
+            # file — the TTS engines used to write to the plugin CWD (served as
+            # 404) and the probe read the CWD too, so a stale CWD file's length
+            # truncated File announcements at the wrong duration.
+            announce_root = (getattr(self, "_announce_http_root", "")
+                             or self.get_announce_http_config()[2] or ".")
             try:
                 if source == "tts":
                     announcement = self.plugin.substitute(props.get("setting"), validateOnly=False)
                     zp_language = props.get("language")
                     tts = gTTS(text=announcement, lang=zp_language)
-                    tts.save('announcement.mp3')
+                    tts.save(os.path.join(announce_root, 'announcement.mp3'))
                     s_announcement = "announcement.mp3"
                     tts_delay = 0
 
@@ -5664,7 +5674,7 @@ class SonosPlugin(object):
                     v.voice_name = IVONAVoices[int(props.get("IVONA_voice"))][1]
                     v.sentence_break = int(props.get("IVONA_sentence_break"))
                     v.speech_rate = props.get("IVONA_speech_rate")
-                    v.fetch_voice(announcement, 'announcement')
+                    v.fetch_voice(announcement, os.path.join(announce_root, 'announcement'))
                     s_announcement = "announcement.mp3"
                     tts_delay = 0.5
                     self.plugin.sleep(0.5)  # allow file creation
@@ -5677,7 +5687,7 @@ class SonosPlugin(object):
                     if "AudioStream" in response:
                         with closing(response["AudioStream"]) as stream:
                             data = stream.read()
-                            with open("announcement.mp3", "wb") as f:
+                            with open(os.path.join(announce_root, "announcement.mp3"), "wb") as f:
                                 f.write(data)
                     s_announcement = "announcement.mp3"
                     tts_delay = 0.5
@@ -5685,7 +5695,7 @@ class SonosPlugin(object):
                 elif source == "apple":
                     announcement = self.plugin.substitute(props.get("APPLE_setting"), validateOnly=False)
                     sp = NSSpeechSynthesizer.alloc().initWithVoice_(props.get("APPLE_voice"))
-                    ru = NSURL.fileURLWithPath_("./announcement.aiff")
+                    ru = NSURL.fileURLWithPath_(os.path.join(announce_root, "announcement.aiff"))
                     sp.startSpeakingString_toURL_(announcement, ru)
                     s_announcement = "announcement.aiff"
                     tts_delay = 0.5
@@ -5694,7 +5704,8 @@ class SonosPlugin(object):
                 elif source == "microsoft":
                     announcement = self.plugin.substitute(props.get("MICROSOFT_setting"), validateOnly=False)
                     language = props.get("MICROSOFT_voice")
-                    statinfo = self.MicrosoftTranslate(announcement, language)
+                    statinfo = self.MicrosoftTranslate(announcement, language,
+                                                       out_path=os.path.join(announce_root, "announcement.mp3"))
                     s_announcement = "announcement.mp3"
                     tts_delay = 0.5
                     if statinfo is False:
@@ -5714,9 +5725,9 @@ class SonosPlugin(object):
                         return
 
                     # IMPORTANT:
-                    # The announcement HTTP server serves from self.SoundFilePath,
+                    # The announcement HTTP server serves from announce_root,
                     # so write announcement.mp3 there, not the plugin working directory.
-                    dst = os.path.join(self.SoundFilePath or "", "announcement.mp3")
+                    dst = os.path.join(announce_root, "announcement.mp3")
 
 
 
@@ -5931,9 +5942,9 @@ class SonosPlugin(object):
             while count < 5 and success == 0:
                 try:
                     if "mp3" in s_announcement:
-                        audio = MP3("./" + s_announcement)
+                        audio = MP3(os.path.join(announce_root, s_announcement))
                     elif "aiff" in s_announcement:
-                        audio = AIFF("./" + s_announcement)
+                        audio = AIFF(os.path.join(announce_root, s_announcement))
                     success = 1
                 except Exception as e:
                     self.logger.debug(f"[ANNOUNCE] audio probe failed (try {count+1}/5): {e}")
@@ -6173,7 +6184,7 @@ class SonosPlugin(object):
 
         return (name_code)
 
-    def MicrosoftTranslate(self, announcement, language):
+    def MicrosoftTranslate(self, announcement, language, out_path='announcement.mp3'):
         authUrl = 'https://datamarket.accesscontrol.windows.net/v2/OAuth2-13/'
         scopeUrl = 'http://api.microsofttranslator.com'
         speakUrl = 'http://api.microsofttranslator.com/V2/Http.svc/Speak'
@@ -6186,7 +6197,7 @@ class SonosPlugin(object):
         headers = {'Content-Type':'audio/mp3', 'Authorization':'Bearer ' + accessToken}
         url = speakUrl + '?text=' + announcement + '&language=' + language + '&format=audio/mp3&options=MaxQuality'
 
-        with open ('announcement.mp3', 'wb') as handle:
+        with open (out_path, 'wb') as handle:
             response = requests.get(url, headers=headers, stream=True)
 
             if response.ok:
