@@ -5714,7 +5714,15 @@ class SonosPlugin(object):
                     announcement = self.plugin.substitute(props.get("POLLY_setting"), validateOnly=False)
                     client = boto3.client('polly', aws_access_key_id=self.PollyaccessKey,
                                           aws_secret_access_key=self.PollysecretKey, region_name='us-east-1')
-                    response = client.synthesize_speech(OutputFormat='mp3', Text=announcement, VoiceId=props.get("POLLY_voice"))
+                    polly_voice = (props.get("POLLY_voice") or "").strip()
+                    if not polly_voice:
+                        # Actions saved while the Voice menu was broken stored ''.
+                        polly_voice = PollyVoices[0][0] if PollyVoices else "Joanna"
+                        self.logger.warning(
+                            f"⚠️ No Polly voice set in this action (saved while the voice list was "
+                            f"unavailable) — using '{polly_voice}'. Re-open and re-save the action "
+                            f"to pick a voice.")
+                    response = client.synthesize_speech(OutputFormat='mp3', Text=announcement, VoiceId=polly_voice)
                     if "AudioStream" in response:
                         with closing(response["AudioStream"]) as stream:
                             data = stream.read()
@@ -12480,6 +12488,29 @@ class SonosPlugin(object):
 
         except Exception as exception_error:
             self.exception_handler(exception_error, True)  # Log error and display failing statement
+
+    def PollyVoices(self):
+        """Populate the global PollyVoices list from AWS describe_voices.
+
+        Restored: this method was deleted in an earlier refactor while its
+        call site in processServicePrefs survived — the swallowed
+        AttributeError left the voice list empty, the action dialog's Voice
+        menu blank, and saved actions with POLLY_voice='' (ValidationException
+        at announcement time).
+        """
+        try:
+            global PollyVoices
+            client = boto3.client("polly", aws_access_key_id=self.PollyaccessKey,
+                                  aws_secret_access_key=self.PollysecretKey, region_name="us-east-1")
+            content = client.describe_voices()
+            if int(content.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)) == 200:
+                PollyVoices.clear()  # re-entrant on prefs re-save; avoid duplicates
+                for voice in content.get("Voices", []):
+                    PollyVoices.append([voice["Id"], voice["Name"], voice["Gender"],
+                                        voice["LanguageCode"], voice["LanguageName"]])
+                self.logger.info(f"Loaded Polly Voices... [{len(PollyVoices)}]")
+        except Exception as exception_error:
+            self.logger.error(f"❌ Could not load Polly voices: {exception_error}")
 
     def getPollyVoices(self, filter=""):
         try:
