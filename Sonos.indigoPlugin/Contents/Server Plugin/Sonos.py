@@ -41,6 +41,8 @@ try:
 except ImportError:
     pass
 
+from contextlib import closing
+
 import soco
 import soco.core
 import soco.events
@@ -5722,7 +5724,22 @@ class SonosPlugin(object):
                             f"⚠️ No Polly voice set in this action (saved while the voice list was "
                             f"unavailable) — using '{polly_voice}'. Re-open and re-save the action "
                             f"to pick a voice.")
-                    response = client.synthesize_speech(OutputFormat='mp3', Text=announcement, VoiceId=polly_voice)
+                    # Newer Polly voices are neural-only and reject the default
+                    # 'standard' engine ("This voice does not support the selected
+                    # engine"). Prefer standard when supported (cheaper), else use
+                    # the voice's first supported engine.
+                    engines = next((v[5] for v in PollyVoices
+                                    if v[0] == polly_voice and len(v) > 5 and v[5]), None)
+                    if not engines:
+                        polly_engine = "standard"
+                    else:
+                        # cheapest supported engine first (standard ≈ $4/1M chars,
+                        # neural ≈ $16, long-form/generative ≈ $30+)
+                        polly_engine = next((e for e in ("standard", "neural", "long-form", "generative")
+                                             if e in engines), engines[0])
+                    self.logger.debug(f"[POLLY] voice={polly_voice} engines={engines} → using '{polly_engine}'")
+                    response = client.synthesize_speech(OutputFormat='mp3', Text=announcement,
+                                                        VoiceId=polly_voice, Engine=polly_engine)
                     if "AudioStream" in response:
                         with closing(response["AudioStream"]) as stream:
                             data = stream.read()
@@ -12507,7 +12524,8 @@ class SonosPlugin(object):
                 PollyVoices.clear()  # re-entrant on prefs re-save; avoid duplicates
                 for voice in content.get("Voices", []):
                     PollyVoices.append([voice["Id"], voice["Name"], voice["Gender"],
-                                        voice["LanguageCode"], voice["LanguageName"]])
+                                        voice["LanguageCode"], voice["LanguageName"],
+                                        list(voice.get("SupportedEngines") or [])])
                 self.logger.info(f"Loaded Polly Voices... [{len(PollyVoices)}]")
         except Exception as exception_error:
             self.logger.error(f"❌ Could not load Polly voices: {exception_error}")
