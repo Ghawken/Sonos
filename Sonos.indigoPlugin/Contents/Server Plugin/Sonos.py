@@ -7577,6 +7577,17 @@ class SonosPlugin(object):
                 # x-rincon link-stream filter in the event handler.
                 bonded_keywords = ["sub", "surround", "boost"]
                 is_bonded = any(kw in model_name.lower() for kw in bonded_keywords)
+                # Model names alone miss surrounds that are ordinary models —
+                # e.g. two Play:1s bonded to a Beam as rears (field report:
+                # they refuse AVTransport/RenderingControl subscriptions with
+                # None SID). Bonded satellites are INVISIBLE zones in the
+                # topology, so check visibility too (answered from soco's
+                # cached zone group state).
+                if not is_bonded:
+                    try:
+                        is_bonded = not soco_device.is_visible
+                    except Exception:
+                        pass
                 if is_bonded:
                     self.logger.debug(f"ℹ️ Skipping {service_name} subscription for {indigo_device.name} (bonded satellite)")
                     return
